@@ -1,6 +1,7 @@
 """Script to play RL agent with RSL-RL."""
 
 import os
+import subprocess
 import sys
 import time as _time
 from dataclasses import asdict, dataclass
@@ -10,6 +11,7 @@ from typing import Literal
 
 import torch
 import tyro
+from PIL import Image
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
@@ -51,6 +53,8 @@ class PlayConfig:
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
   log_root: str = "logs/rsl_rl"
   """Root directory under which experiment logs are written."""
+  record_path: str | None = None
+  """Output path for recording video (e.g., 'recordings/output.mp4')."""
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
@@ -162,12 +166,19 @@ def run_play(task_id: str, cfg: PlayConfig):
   if cfg.video_width is not None:
     env_cfg.viewer.width = cfg.video_width
 
-  render_mode = "rgb_array" if (TRAINED_MODE and cfg.video) else None
+  render_mode = "rgb_array" if (TRAINED_MODE and (cfg.video or cfg.record_path is not None)) else None
   if cfg.video and DUMMY_MODE:
     print(
       "[WARN] Video recording with dummy agents is disabled (no checkpoint/log_dir)."
     )
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
+
+  # 录屏初始化
+  frames = []
+  should_record = cfg.record_path is not None
+  if should_record:
+    print(f"[INFO] Recording to: {cfg.record_path}")
+    os.makedirs(os.path.dirname(os.path.abspath(cfg.record_path)), exist_ok=True)
 
   if TRAINED_MODE and cfg.video:
     print("[INFO] Recording videos during play")
@@ -287,12 +298,95 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
-  if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy).run()
-  elif resolved_viewer == "viser":
-    ViserPlayViewer(env, policy, checkpoint_manager=ckpt_manager).run()
+  # 录屏模式：手动步进，不用 viewer，边录边存
+  if should_record:
+    print("[INFO] Starting recording...")
+
+    # 创建临时目录存帧
+    temp_dir = cfg.record_path.replace(".mp4", "_frames")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # 从 motion_file 读取帧数，限制录制长度
+    max_steps = 100000  # 默认安全上限
+    if cfg.motion_file is not None and Path(cfg.motion_file).exists():
+        try:
+            import numpy as np
+            motion_data = np.load(cfg.motion_file)
+            motion_frames = motion_data['joint_pos'].shape[0]
+            max_steps = motion_frames + 50  # 多录 50 帧缓冲
+            print(f"[INFO] Motion file has {motion_frames} frames, max_steps set to {max_steps}")
+        except Exception as e:
+            print(f"[WARN] Could not read motion file frames: {e}")
+
+    obs, _ = env.reset()
+    done = False
+    step = 0
+    batch_frames = []
+
+    while not done and step < max_steps:
+      with torch.no_grad():
+        actions = policy(obs)
+
+      result = env.step(actions)
+      if len(result) == 5:
+        obs, _, terminated, truncated, _ = result
+        done = terminated[0].item() or truncated[0].item()
+      else:
+        obs, _, done_flag, _ = result
+        done = done_flag[0].item() if hasattr(done_flag, '__getitem__') else bool(done_flag)
+
+      # 渲染截图，批量缓存
+      img = env.env.render()
+      if img is not None:
+        batch_frames.append(img)
+
+      # 每 500 帧批量写入
+      if len(batch_frames) >= 500:
+        for i, frame in enumerate(batch_frames):
+          frame_idx = step - len(batch_frames) + 1 + i
+          Image.fromarray(frame).save(os.path.join(temp_dir, f"frame_{frame_idx:06d}.png"))
+        batch_frames = []
+        print(f"  Saved batch, total: {step + 1} frames...")
+
+      step += 1
+
+    # 写入剩余帧
+    if batch_frames:
+      for i, frame in enumerate(batch_frames):
+        frame_idx = step - len(batch_frames) + i
+        Image.fromarray(frame).save(os.path.join(temp_dir, f"frame_{frame_idx:06d}.png"))
+
+    # 用 ffmpeg 合并视频
+    if step > 0:
+      import subprocess
+      ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-framerate", "50",
+        "-i", os.path.join(temp_dir, "frame_%06d.png"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-crf", "18",
+        cfg.record_path
+      ]
+      try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        print(f"[INFO] Video saved: {cfg.record_path}")
+        print(f"[INFO] Total frames: {step}, Duration: {step/50:.2f}s")
+      except subprocess.CalledProcessError as e:
+        print(f"[WARN] ffmpeg failed: {e}")
+        print(f"[INFO] Frames saved in: {temp_dir}")
+        print("[INFO] You can manually merge with: ffmpeg -framerate 50 -i frame_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4")
+    else:
+      print("[WARN] No frames captured")
+
   else:
-    raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
+    # 正常 viewer 模式
+    if resolved_viewer == "native":
+      NativeMujocoViewer(env, policy).run()
+    elif resolved_viewer == "viser":
+      ViserPlayViewer(env, policy, checkpoint_manager=ckpt_manager).run()
+    else:
+      raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
 
   env.close()
 

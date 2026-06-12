@@ -309,31 +309,32 @@ def run_sim(
         np.savez("/tmp/motion.npz", **log)
 
         print("Uploading to Weights & Biases...")
-        import wandb
-
+        
         COLLECTION = output_name
-        run = wandb.init(project="csv_to_npz", name=COLLECTION)
-        print(f"[INFO]: Logging motion to wandb: {COLLECTION}")
-        REGISTRY = "motions"
-        logged_artifact = run.log_artifact(
-          artifact_or_path="/tmp/motion.npz", name=COLLECTION, type=REGISTRY
-        )
-        run.link_artifact(
-          artifact=logged_artifact,
-          target_path=f"wandb-registry-{REGISTRY}/{COLLECTION}",
-        )
-        print(f"[INFO]: Motion saved to wandb registry: {REGISTRY}/{COLLECTION}")
+        print(f"[INFO]: Saving motion locally: {COLLECTION}")
+
+        # 本地保存路径（Windows 兼容）
+        import os
+        import shutil
+        
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.join(script_dir, "..", "..", "..")
+        project_root = os.path.normpath(project_root)  # 解析 .. 为绝对路径
+        
+        local_dir = os.path.join(project_root, "datasets", "npz")
+        os.makedirs(local_dir, exist_ok=True)
+        
+        local_path = os.path.join(local_dir, f"{COLLECTION}.npz")
+        shutil.copy("/tmp/motion.npz", local_path)
+        print(f"[INFO]: Motion saved to: {local_path}")
 
         if render:
-          import mediapy as media
+            import mediapy as media
 
-          print("Creating video...")
-          media.write_video("./motion.mp4", frames, fps=output_fps)
-
-          print("Logging video to wandb...")
-          wandb.log({"motion_video": wandb.Video("./motion.mp4", format="mp4")})
-
-        wandb.finish()
+            print("Creating video...")
+            video_path = os.path.join(local_dir, f"{COLLECTION}.mp4")
+            media.write_video(video_path, frames, fps=output_fps)
+            print(f"[INFO]: Video saved to: {video_path}")
 
 
 def main(

@@ -152,7 +152,21 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
   cfg.rewards["body_ang_vel"].weight = -0.05
   cfg.rewards["angular_momentum"].weight = -0.02
-  cfg.rewards["air_time"].weight = 0.0
+  cfg.rewards["air_time"].weight = 0.5
+  cfg.rewards["air_time"].params["threshold_min"] = 0.15
+  cfg.rewards["air_time"].params["command_threshold"] = 0.8
+  cfg.rewards["track_linear_velocity"].weight = 5.0
+  cfg.rewards["upright"].weight = 0.5
+  # 低速时（<<0.3）不激活精细走路惩罚，避免机器人在低速区间"偷懒"站定
+  cfg.rewards["foot_clearance"].params["command_threshold"] = 0.3
+  cfg.rewards["foot_swing_height"].params["command_threshold"] = 0.3
+  cfg.rewards["foot_slip"].params["command_threshold"] = 0.3
+  cfg.rewards["soft_landing"].params["command_threshold"] = 0.3
+  # 同时降低 stand_still 权重，避免干扰正常慢速行走
+  cfg.rewards["stand_still"].weight = 0.01
+  cfg.rewards["stand_still"].params["threshold"] = 0.2
+  # 大幅降低动作变化惩罚，让机器人敢迈大步
+  cfg.rewards["action_rate_l2"].weight = -0.02
 
   cfg.rewards["self_collisions"] = RewardTermCfg(
     func=mdp.self_collision_cost,

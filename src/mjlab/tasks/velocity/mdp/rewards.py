@@ -464,3 +464,19 @@ class variable_posture:
     error_squared = torch.square(current_joint_pos - desired_joint_pos)
 
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
+  
+def stand_still_reward(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  threshold: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize joint motion when velocity command is near zero."""
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  is_zero_speed = torch.norm(command[:, :2], dim=1) < threshold
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_vel = asset.data.joint_vel
+  # 用平方均值代替范数，小速度惩罚小，大速度惩罚大，但量级可控
+  vel_cost = torch.mean(torch.square(joint_vel), dim=1)
+  return -vel_cost * is_zero_speed.float()
